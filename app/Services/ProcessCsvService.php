@@ -86,7 +86,8 @@ class ProcessCsvService
             {
                foreach($chunk100Rows as $chunkRow)
                {
-                  $this->logToJson($chunkRow);
+                   $this->saveDataToDB($chunkRow);
+                  //$this->logToJson($chunkRow);
                }
                 
             } 
