@@ -27,87 +27,69 @@ class ProcessCsvService
                 throw new Exception('invalid csv file');
             }
 
-            // Use 0 for unlimited line length to handle long lines and embedded newlines
-            $headers = fgetcsv($handle, 0, ",");
-            if ($headers === false || count($headers) < 8) {
-                fclose($handle);
-                throw new Exception('incomplete csv file');
-            }
+           $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReader('Csv');
 
-            $expectedColumns = count($headers);
-            Log::info("CSV Processing Started", [
-                'file' => basename($this->filePath),
-                'columns' => $expectedColumns
-            ]);
-            
-            $this->mapCsvFields($headers);
+            // Optional: Set reader properties if your CSV has specific characteristics
+            // $reader->setDelimiter(','); // Default is comma
+            // $reader->setEnclosure('"'); // Default is double quote
+            // $reader->setSheetIndex(0); // Default is 0
 
-            Log::info("CSV Fields Mapped", [
-                'mapped_fields' => array_values($this->fieldsIndexed)
-            ]);
-            
-            // Process in batches to save memory
-            $batchSize = 100;
-            $batch = [];
-            $rowNum = 0;
-            $totalSaved = 0;
-            $totalFailed = 0;
-            
-            while (($line = fgets($handle)) !== FALSE) {
-                $rowNum++;
-                $line = rtrim($line, "\r\n");
-                if ($line === '') {
-                    continue; // skip empty lines
-                }
+            // 2. Load the CSV file into a Spreadsheet object
+            $spreadsheet = $reader->load($this->filePath);
 
-                // Split into columns
-                $csvRow = array_map('trim', explode(',', $line));
-                $columnCount = count($csvRow);
-                
-                // Validate column count
-                if ($columnCount !== $expectedColumns) {
-                    $csvRow = array_pad($csvRow, $expectedColumns, null);
-                }
-                
-                $parsed = $this->parse($csvRow);
-                $batch[] = $parsed;
-                return [$csvRow,$parsed];
-                // Process batch when it reaches the batch size
-                if (count($batch) >= $batchSize) {
-                    $result = $this->processBatch($batch, $rowNum);
-                    $totalSaved += $result['saved'];
-                    $totalFailed += $result['failed'];
-                    
-                    // Clear batch to free memory
-                    $batch = [];
-                    
-                    // Force garbage collection every 1000 rows
-                    if ($rowNum % 1000 === 0) {
-                        gc_collect_cycles();
-                        Log::info("Progress: {$rowNum} rows processed", [
-                            'saved' => $totalSaved,
-                            'failed' => $totalFailed
-                        ]);
+            // 3. Get the active worksheet (the first sheet by default)
+            $worksheet = $spreadsheet->getActiveSheet();
+
+            $data = [];
+            $headers = [];
+            $headerRowNum = 1; // Assuming the first row contains headers
+
+            // 4. Iterate through rows
+            // getHighestRow() gets the number of the last row that contains data
+            foreach ($worksheet->getRowIterator() as $row) { // $row is a Row object
+                $rowIndex = $row->getRowIndex();
+
+                // Get the cell iterator for the current row
+                $cellIterator = $row->getCellIterator();
+                // Optional: If you want to skip empty cells at the end of the row
+                $cellIterator->setIterateOnlyExistingCells(true);
+
+                $rowData = [];
+                $cellIndex = 0;
+
+                foreach ($cellIterator as $cell) { // $cell is a Cell object
+                    $value = $cell->getValue();
+
+                    // Decode HTML entities (like &#174;) in the cell value
+                    // Note: This happens *after* reading the value from the cell
+                    $decodedValue = html_entity_decode($value, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+                    $decodedValue = trim($decodedValue); // Trim whitespace
+
+                    if ($rowIndex === $headerRowNum) {
+                        // Store headers for the first row
+                        $headers[$cellIndex] = $decodedValue;
+                    } else {
+                        // Store data for subsequent rows
+                        $rowData[$headers[$cellIndex]] = $decodedValue; // Use header name as key
                     }
+                    $cellIndex++;
+                }
+
+                // After processing all cells in a data row (not the header row)
+                if ($rowIndex > $headerRowNum && !empty($rowData)) {
+                    $data[] = $rowData;
                 }
             }
-            
-            // Process remaining rows in the last batch
-            if (!empty($batch)) {
-                $result = $this->processBatch($batch, $rowNum);
-                $totalSaved += $result['saved'];
-                $totalFailed += $result['failed'];
-            }
 
-            fclose($handle);
-            
-            Log::info("CSV Processing Complete", [
-                'file' => basename($this->filePath),
-                'total_rows' => $rowNum,
-                'saved' => $totalSaved,
-                'failed' => $totalFailed
-            ]);
-
+            $chunks = array_chunk($data, 100);
+            foreach($chunks as $chunk100Rows)
+            {
+               foreach($chunk100Rows as $chunkRow)
+               {
+                  $this->logToJson($chunkRow);
+               }
+                
+            } 
         } catch (Exception $e) {
             if (isset($handle) && is_resource($handle)) {
                 fclose($handle);
