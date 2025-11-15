@@ -25,6 +25,9 @@ class ProcessFileUpload implements ShouldQueue
      * Maximum number of exceptions before the job fails.
      */
     public int $maxExceptions = 3;
+
+    // No backoff - retry immediately on failure
+
     
     /**
      * The number of seconds the job can run before timing out.
@@ -46,33 +49,47 @@ class ProcessFileUpload implements ShouldQueue
      */
     public function handle(): void
     {
-        // Increase memory limit for large CSV files
+        // Increase memory limit and execution time for large CSV files
         ini_set('memory_limit', '512M');
+        set_time_limit(0); // No time limit
+        
+        if (!file_exists($this->filePath)) {
+            $file->update(['status' => 'failed']);
+            $this->fail(new \Exception('File not found'));
+            return;
+        }
         
         $file = File::find($this->fileId);
-
+        Log::info('---------------:'.$this->fileId);
         if (!$file) {
             Log::warning("File record {$this->fileId} not found for processing.");
+            $this->failed(new \Exception('File not found'));
+
             return;
         }
 
+       
         $file->update(['status' => 'processing']);
-        
-        Log::info("Starting CSV processing for file {$file->id}", [
-            'file_name' => $file->name,
-            'file_path' => $this->filePath
-        ]);
+    
+        Log::info("Starting CSV processing for file {$file->id}");
 
-        try {
-            $this->processCsvService->processCsvData();
-            $file->update(['status' => 'completed']);
-            Log::info("Successfully completed processing file {$file->id}");
-        } catch (\Throwable $e) {
+        // Let exceptions bubble up - Laravel will handle retries
+        $this->processCsvService->processCsvData();
+        $file->update(['status' => 'completed']);
+        Log::info("Successfully completed processing file {$file->id}");
+    }
+
+    public function failed(\Throwable $exception): void
+    {
+        // This runs after all retries are exhausted
+        $file = File::find($this->fileId);
+        if ($file) {
             $file->update(['status' => 'failed']);
-            Log::error("Error processing file {$file->id}: ".$e->getMessage(), [
-                'exception' => $e->getMessage(),
-                'trace' => $e->getTraceAsString()
-            ]);
         }
+        
+        Log::error("File {$this->fileId} processing failed permanently", [
+            'exception' => $exception->getMessage(),
+            'trace' => $exception->getTraceAsString()
+        ]);
     }
 }

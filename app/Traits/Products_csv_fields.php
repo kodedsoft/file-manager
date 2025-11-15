@@ -2,7 +2,7 @@
 namespace App\Traits;
 
 
-Trait Products_csv_fields
+trait Products_csv_fields
 {
       public array $fieldsArray =  [
         'UNIQUE_KEY' => null,
